@@ -75,6 +75,8 @@ Method values
                               when ``classification.feature_standardize`` is enabled. -> ``results/models/``
 ``linear`` / ``linear-std``   L-BFGS logistic regression with C-sweep on the validation set; ``-std`` is appended
                               when ``classification.feature_standardize`` is enabled. -> ``results/models/``
+``linear-fewshot``            The linear probe trained on one few-shot episode (see ``classification.few_shot``);
+                              ``-std`` is appended as for ``linear``. -> ``results/models/``
 ``intrinsic_dim``             Intrinsic-dimension estimates and centered feature-spectrum diagnostics on extracted embeddings.
                               Enable both with ``intrinsic_dim.enabled: true`` or set ``estimators: []`` for
                               spectrum-only output. -> ``results/intrinsic_dim/``
@@ -108,7 +110,7 @@ Column                 Description
                        (linear probe only, otherwise ``None``).
 ``best_lr``            Best learning rate (segmentation only).
 ``best_batch_size``    Best batch size (segmentation only).
-``n_train``            Train-split sample count.
+``n_train``            Train-split sample count; the episode size for ``linear-fewshot`` rows.
 ``n_val``              Validation-split sample count.
 ``n_test``             Test-split sample count.
 ``seed``               RNG seed used for the run.
@@ -144,6 +146,8 @@ Column                 Description
 ``mce_ts``             Post-temperature-scaling MCE (linear probe with ``temp_scale``).
 ``temperature``        Fitted temperature-scaling scalar (linear probe with ``temp_scale``).
 ``calibration_n_bins`` Number of histogram bins used for calibration metrics.
+``shots``              Examples per class in a ``linear-fewshot`` episode; empty otherwise.
+``episode_seed``       Seed that drew a ``linear-fewshot`` episode; empty otherwise.
 ====================== ============================================================
 
 Segmentation rows also include ``boundary_iou`` (mean Boundary IoU) and ``boundary_iou_width`` (the boundary tolerance in pixels, rounded from 2% of the image diagonal), plus ``best_val_epoch`` and ``best_val_miou``: the epoch restored for test evaluation and its validation mIoU (see :ref:`segmentation-model-selection`).

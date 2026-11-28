@@ -34,13 +34,21 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_RESULTS_DIR = "results/models"
 
+#: Few-shot episode columns of the resume key. A file without them keys them as empty, like the
+#: setup columns, so a file need not have them to be deduplicated.
+EPISODE_COLS = ("shots", "episode_seed")
+
 # The resume key minus ``config_hash`` (an unhashed row and a hashed rerun of
 # the same measurement share a key, so the hashed row replaces the unhashed
 # one), plus ``metric_name`` (one run emits several metric rows under
 # the same resume key) and ``seed`` (absent from the resume key, but different
 # seeds are different measurements -- without it a multi-seed sweep would
 # collapse to a single arbitrary seed).
-_BASE_DEDUP_KEY_COLS = (*(c for c in KEY_COLS if c != "config_hash"), "metric_name", "seed")
+_BASE_DEDUP_KEY_COLS = (
+    *(c for c in KEY_COLS if c != "config_hash" and c not in EPISODE_COLS),
+    "metric_name",
+    "seed",
+)
 
 #: Segmentation setup columns. They describe the training setup of a row and join
 #: :data:`DEDUP_KEY_COLS` (not the resume key, which keeps ``config_hash``). Every cell
@@ -82,7 +90,7 @@ NUMERIC_SETUP_COLS = frozenset(
 #: is restored. The ``config_hash`` payload names the same protocol ``best-validation-miou``.
 SELECTION_METRIC = "val_miou"
 
-DEDUP_KEY_COLS = (*_BASE_DEDUP_KEY_COLS, *SETUP_COLS)
+DEDUP_KEY_COLS = (*_BASE_DEDUP_KEY_COLS, *EPISODE_COLS, *SETUP_COLS)
 
 
 def format_setup_value(value: object) -> str | None:
@@ -228,7 +236,7 @@ def _dedup_results(df: pd.DataFrame) -> pd.DataFrame:
     """Keep one row per measurement group in :data:`DEDUP_KEY_COLS`.
 
     A hashed row wins over an unhashed one; among hashed rows the last appended wins.
-    Files without the setup columns key them as empty.
+    Files without the episode or setup columns key them as empty.
     A train-only linear probe and one refit on train plus validation are separate groups.
     """
     missing = [c for c in _BASE_DEDUP_KEY_COLS if c not in df.columns]
@@ -240,7 +248,8 @@ def _dedup_results(df: pd.DataFrame) -> pd.DataFrame:
         _canonical_setup_cell if c in NUMERIC_SETUP_COLS else _canonical_key_cell
         for c in DEDUP_KEY_COLS
     ]
-    key_df[list(SETUP_COLS)] = key_df[list(SETUP_COLS)].astype(object).fillna("")
+    optional = [*EPISODE_COLS, *SETUP_COLS]
+    key_df[optional] = key_df[optional].astype(object).fillna("")
     key = key_df.apply(
         lambda row: tuple(fn(v) for fn, v in zip(cell_fns, row, strict=True)), axis=1
     )
@@ -425,6 +434,9 @@ class EvaluationResult:
     mce_ts: float | None = None
     temperature: float | None = None
     calibration_n_bins: int | None = None
+    # Few-shot episode (empty for probes trained on the whole training split).
+    shots: int | None = None
+    episode_seed: int | None = None
 
     def to_row(self) -> dict:
         """Convert to a flat dictionary suitable for CSV/DataFrame export."""

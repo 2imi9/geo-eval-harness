@@ -158,8 +158,11 @@ Classification
        n_bins_knn: null
        n_bins_linear: 15
        temp_scale: false
+     few_shot:
+       shots: [1, 5, 10, 20]
+       episodes: 5
 
-Select ``--methods knn``, ``--methods linear``, or ``--methods knn linear``.
+Select any of ``knn``, ``linear``, and ``few_shot`` with ``--methods``, for example ``--methods knn linear``.
 Linear-only runs do not require a KNN result. ``--knn-k``,
 ``--knn-device``, and ``--bootstrap-samples`` override the corresponding
 fields. A null KNN device inherits the feature-extraction device. On Apple Silicon, use ``run --device mps`` for feature extraction and KNN, or ``--knn-device mps`` to select MPS for KNN independently.
@@ -170,6 +173,8 @@ The linear probe selects regularization on validation data from ``c_count`` log-
 ``n_bins_knn: null`` uses ``knn_k + 1`` calibration bins.
 
 ``feature_standardize: true`` z-scores every embedding dimension with a mean and standard deviation fit on the training split, ``(x - mean) / sqrt(var + 1e-6)``, before KNN and the linear probe. Results are written under the methods ``knn<k>-std`` and ``linear-std``. Intrinsic-dimension and spectrum measurements use the unscaled embeddings.
+
+``few_shot`` runs the linear probe on balanced training subsets of the training split, single-label datasets only. For each value ``k`` in ``few_shot.shots`` and each episode seed from 0 to ``few_shot.episodes - 1``, it draws exactly ``k`` examples of every class, selects C on the whole validation split, and scores the test split without refitting on validation data. The draw depends only on the training labels, ``k``, and the episode seed, and a smaller ``k`` selects a subset of a larger one under the same seed. An episode whose ``k`` exceeds the training size of some class is skipped with a warning. Rows use the method ``linear-fewshot`` (``linear-fewshot-std`` with ``feature_standardize``) and record ``shots``, ``episode_seed``, and the episode size as ``n_train``. The ``few_shot`` settings are not part of ``config_hash``: ``--resume`` skips each episode whose row exists, so adding shot counts or episodes later runs only the new ones.
 
 Segmentation
 ^^^^^^^^^^^^
