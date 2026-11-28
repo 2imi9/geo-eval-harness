@@ -63,6 +63,7 @@ from geo_eval_harness.resume import (
     load_completed,
     normalize_bands_value,
     plan_dataset_run,
+    resample_config_hash,
     resume_config_hash,
 )
 from geo_eval_harness.utils import (
@@ -891,6 +892,111 @@ def evaluate_few_shot(  # noqa: PLR0913 - keep the CLI failure policy explicit
         ).to_row()
 
 
+def _stratified_bootstrap(labels: np.ndarray, seed: int) -> np.ndarray:
+    """Draw each class's examples with replacement, as many times as the class has examples."""
+    rng = np.random.default_rng(seed)
+    classes, counts = np.unique(labels, return_counts=True)
+    return np.concatenate(
+        [
+            rng.choice(np.flatnonzero(labels == label), size=count)
+            for label, count in zip(classes, counts, strict=True)
+        ]
+    )
+
+
+def evaluate_resample(  # noqa: PLR0913 - keep the CLI failure policy explicit
+    splits: FeatureSplits[np.ndarray],
+    c_values: Sequence[float],
+    cfg: RunConfig,
+    metric_name: str,
+    common_meta: ResultMetadata,
+    *,
+    strict: bool = False,
+) -> list[dict]:
+    """Refit the linear probe once per resample seed and summarize the spread of its test metric.
+
+    Each seed draws a stratified bootstrap resample of the training split (every class keeps its
+    size, drawn with replacement from its own examples) and runs the linear probe on it unchanged
+    otherwise. Returns one row per seed and two summary rows, ``<metric>_mean`` and
+    ``<metric>_std`` (sample standard deviation over seeds), or no rows when a seed finds no usable
+    C and ``strict`` is false.
+    """
+    seeds = cfg.classification.resample.seeds
+    meta: ResultMetadata = {
+        **common_meta,
+        "config_hash": resample_config_hash(common_meta["config_hash"], seeds),
+    }
+    method = cfg.classification.resample_method
+    rows = []
+    for seed in seeds:
+        draw = _stratified_bootstrap(splits.train.labels, seed)
+        train = FeatureSplit(splits.train.features[draw], splits.train.labels[draw])
+        try:
+            score, lo, hi, best_c, cal, cal_ts = evaluate_logistic(
+                replace(splits, train=train), c_values, cfg
+            )
+        except LinearProbeDivergedError as exc:  # allow-except: Other metrics remain usable.
+            if strict:
+                raise
+            logger.warning(
+                "[resample] dataset=%s: skipping all seeds, seed %s found no usable C. Diagnostic: %s",
+                common_meta.get("dataset"),
+                seed,
+                exc,
+            )
+            return []
+        rows.append(
+            EvaluationResult(
+                **meta,
+                method=method,
+                metric_name=metric_name,
+                metric_value=score,
+                ci_lower=lo,
+                ci_upper=hi,
+                best_c=best_c,
+                episode_seed=seed,
+                ece=cal["ece"],
+                rms_ce=cal["rms_ce"],
+                mce=cal["mce"],
+                ece_ts=cal_ts["ece_ts"],
+                rms_ce_ts=cal_ts["rms_ce_ts"],
+                mce_ts=cal_ts["mce_ts"],
+                temperature=cal_ts["temperature"],
+                calibration_n_bins=cfg.classification.calibration.n_bins_linear,
+            ).to_row()
+        )
+    values = np.array([row["metric_value"] for row in rows])
+    summary = {"mean": float(values.mean()), "std": float(values.std(ddof=1))}
+    rows.extend(
+        EvaluationResult(
+            **meta, method=method, metric_name=f"{metric_name}_{stat}", metric_value=value
+        ).to_row()
+        for stat, value in summary.items()
+    )
+    return rows
+
+
+def _training_subset_rows(  # noqa: PLR0913 - keep the CLI failure policy explicit
+    splits: FeatureSplits[np.ndarray],
+    c_values: Sequence[float],
+    cfg: RunConfig,
+    plan: DatasetRunPlan,
+    common_meta: ResultMetadata,
+    *,
+    strict: bool = False,
+) -> Iterator[tuple[list[dict], list[dict], list[dict]]]:
+    """Yield few-shot rows one episode at a time, then the resample rows together."""
+    few_shot_meta: ResultMetadata = {**common_meta, "merge_val": False}
+    for row in evaluate_few_shot(splits, c_values, cfg, plan, few_shot_meta, strict=strict):
+        yield [row], [], []
+    if not plan.skip_resample:
+        rows = evaluate_resample(
+            splits, c_values, cfg, plan.metric_name, common_meta, strict=strict
+        )
+        if rows:
+            yield rows, [], []
+
+
 def run_classification(  # noqa: PLR0913 - keep the CLI failure policy explicit
     cfg: RunConfig,
     plan: DatasetRunPlan,
@@ -983,9 +1089,7 @@ def run_classification(  # noqa: PLR0913 - keep the CLI failure policy explicit
                 calibration_n_bins=cal_n_bins_linear,
             ).to_row()
             yield [row], [], []
-    few_shot_meta: ResultMetadata = {**common_meta, "merge_val": False}
-    for row in evaluate_few_shot(splits, c_values_list, cfg, plan, few_shot_meta, strict=strict):
-        yield [row], [], []
+    yield from _training_subset_rows(splits, c_values_list, cfg, plan, common_meta, strict=strict)
     if not plan.skip_id:
         id_rows = evaluate_intrinsic_dim(
             {"train": x_train, "val": x_val, "test": x_test},

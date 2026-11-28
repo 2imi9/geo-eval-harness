@@ -29,7 +29,7 @@ KEY_COLS = (
     # Dataset overrides can change resolution or pooling under one model name (Scale-MAE).
     "res",
     "pool",
-    # A few-shot probe row is one episode: its shot count and the seed that drew its training set.
+    # A few-shot shot count, and the seed that drew a few-shot or resampled training set.
     "shots",
     "episode_seed",
     # Include result-affecting settings not represented by the other columns.
@@ -55,8 +55,9 @@ def resume_config_hash(config: RunConfig, model_cfg: ModelPreset, *, task: str) 
     """Fingerprint result-affecting settings for one resolved image run.
 
     Excludes the model and KNN devices and worker count, which only control execution, and the
-    probe selection (``methods``, ``few_shot``), whose rows carry their own method, shot count, and
-    episode seed. Includes
+    probe selection (``methods``, ``few_shot``, ``resample``), whose rows carry their own method,
+    shot count, and episode seed; resample rows extend the hash with their seeds through
+    :func:`resample_config_hash`. Includes
     batch size because it can change floating-point results. LoRA settings count only when
     ``lora_rank`` enables LoRA, so preset LoRA targets do not change frozen-probe hashes.
     ``neck``, ``upsampler``,
@@ -70,7 +71,7 @@ def resume_config_hash(config: RunConfig, model_cfg: ModelPreset, *, task: str) 
     settings such as a preset's ``segmentation.layers`` never change the hash of classification,
     profile, or intrinsic-dimension rows. Segmentation hashes also cover ``classification``.
     """
-    classification_exclude = {"methods", "few_shot"}
+    classification_exclude = {"methods", "few_shot", "resample"}
     if not config.classification.feature_standardize:
         classification_exclude.add("feature_standardize")
     runtime_fields = {"seed", "batch_size"}
@@ -249,6 +250,7 @@ class DatasetRunPlan:
     skip_profile: bool
     id_missing_metrics: frozenset[str] = frozenset()
     few_shot_episodes: frozenset[tuple[int, int]] = frozenset()
+    skip_resample: bool = True
     knn_device: str | None = None
 
 
@@ -287,6 +289,16 @@ def plan_dataset_run(
         or "linear" not in cfg.classification.methods
     )
     few_shot_episodes = _missing_few_shot_episodes(cfg, ds_cls, common_meta, completed_runs)
+    resample_key = (
+        ds_name,
+        cfg.classification.resample_method,
+        *model_key[:-1],
+        resample_config_hash(model_key[-1], cfg.classification.resample.seeds),
+    )
+    skip_resample = bool(
+        not _single_label_probe_requested(cfg, ds_cls, "resample", str(ds_name))
+        or (cfg.output.resume and resample_key in completed_runs)
+    )
 
     id_cfg = cfg.intrinsic_dim
     id_enabled = id_cfg.enabled
@@ -319,7 +331,12 @@ def plan_dataset_run(
     return DatasetRunPlan(
         metric_name="micro_mAP" if ds_cls.multilabel else "accuracy",
         skip_dataset=(
-            skip_knn and skip_linear and not few_shot_episodes and skip_id and skip_profile
+            skip_knn
+            and skip_linear
+            and not few_shot_episodes
+            and skip_resample
+            and skip_id
+            and skip_profile
         ),
         skip_knn=skip_knn,
         skip_linear=skip_linear,
@@ -327,6 +344,7 @@ def plan_dataset_run(
         skip_profile=skip_profile,
         id_missing_metrics=id_missing_metrics,
         few_shot_episodes=few_shot_episodes,
+        skip_resample=skip_resample,
     )
 
 
@@ -338,13 +356,7 @@ def _missing_few_shot_episodes(
 ) -> frozenset[tuple[int, int]]:
     """Return the requested ``(shots, episode_seed)`` pairs that have no result row yet."""
     classification = cfg.classification
-    if "few_shot" not in classification.methods:
-        return frozenset()
-    if ds_cls.multilabel:
-        logger.warning(
-            "[%s] Skipping few-shot probes: they support single-label datasets only.",
-            common_meta["dataset"],
-        )
+    if not _single_label_probe_requested(cfg, ds_cls, "few_shot", str(common_meta["dataset"])):
         return frozenset()
     meta = {**common_meta, "method": classification.few_shot_method}
     requested = (
@@ -361,3 +373,22 @@ def _missing_few_shot_episodes(
             in completed_runs
         )
     )
+
+
+def _single_label_probe_requested(cfg: RunConfig, ds_cls: type, method: str, ds_name: str) -> bool:
+    """Return whether a single-label probe is selected; warn when the dataset is multilabel."""
+    if method not in cfg.classification.methods:
+        return False
+    if ds_cls.multilabel:
+        logger.warning(
+            "[%s] Skipping %s probes: they support single-label datasets only.", ds_name, method
+        )
+        return False
+    return True
+
+
+def resample_config_hash(config_hash: str, seeds: Sequence[int]) -> str:
+    """Extend a run's ``config_hash`` with the resample seeds, which its summary rows depend on."""
+    payload = {"config_hash": config_hash, "resample_seeds": sorted(seeds)}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()[:16]

@@ -161,8 +161,10 @@ Classification
      few_shot:
        shots: [1, 5, 10, 20]
        episodes: 5
+     resample:
+       seeds: [0, 1, 2, 3, 4]
 
-Select any of ``knn``, ``linear``, and ``few_shot`` with ``--methods``, for example ``--methods knn linear``.
+Select any of ``knn``, ``linear``, ``few_shot``, and ``resample`` with ``--methods``, for example ``--methods knn linear``.
 Linear-only runs do not require a KNN result. ``--knn-k``,
 ``--knn-device``, and ``--bootstrap-samples`` override the corresponding
 fields. A null KNN device inherits the feature-extraction device. On Apple Silicon, use ``run --device mps`` for feature extraction and KNN, or ``--knn-device mps`` to select MPS for KNN independently.
@@ -175,6 +177,8 @@ The linear probe selects regularization on validation data from ``c_count`` log-
 ``feature_standardize: true`` z-scores every embedding dimension with a mean and standard deviation fit on the training split, ``(x - mean) / sqrt(var + 1e-6)``, before KNN and the linear probe. Results are written under the methods ``knn<k>-std`` and ``linear-std``. Intrinsic-dimension and spectrum measurements use the unscaled embeddings.
 
 ``few_shot`` runs the linear probe on balanced training subsets of the training split, single-label datasets only. For each value ``k`` in ``few_shot.shots`` and each episode seed from 0 to ``few_shot.episodes - 1``, it draws exactly ``k`` examples of every class, selects C on the whole validation split, and scores the test split without refitting on validation data. The draw depends only on the training labels, ``k``, and the episode seed, and a smaller ``k`` selects a subset of a larger one under the same seed. An episode whose ``k`` exceeds the training size of some class is skipped with a warning. Rows use the method ``linear-fewshot`` (``linear-fewshot-std`` with ``feature_standardize``) and record ``shots``, ``episode_seed``, and the episode size as ``n_train``. The ``few_shot`` settings are not part of ``config_hash``: ``--resume`` skips each episode whose row exists, so adding shot counts or episodes later runs only the new ones.
+
+``resample`` measures how much the linear probe depends on which training examples it sees, single-label datasets only. For each seed in ``resample.seeds``, it draws a stratified bootstrap resample of the training split (every class keeps its size, drawn with replacement from its own examples) and runs the linear probe on it with the usual C selection and ``refit_train_val`` setting; the embeddings stay fixed. The seed draws the training set rather than the initial weights because the regularized objective has a single minimizing weight matrix, so a different starting point would only reproduce the same probe. Each seed writes one row under the method ``linear-resample`` (``linear-resample-std`` with ``feature_standardize``) with the seed in ``episode_seed``, and two summary rows give the mean and the sample standard deviation over seeds as the metrics ``<metric>_mean`` and ``<metric>_std``. This spread is not the bootstrap confidence interval of the other rows: ``ci_lower`` and ``ci_upper`` resample the test predictions of one fitted probe, while ``resample`` refits the probe on different training data. Rows of ``resample`` extend ``config_hash`` with the seeds, so ``--resume`` reruns all seeds when ``resample.seeds`` changes.
 
 Segmentation
 ^^^^^^^^^^^^

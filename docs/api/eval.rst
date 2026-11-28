@@ -55,6 +55,12 @@ Few-shot linear probing
 .. currentmodule:: geo_eval_harness.few_shot
 .. autofunction:: few_shot_indices
 
+Resampled linear probing
+------------------------
+
+.. currentmodule:: geo_eval_harness.main
+.. autofunction:: evaluate_resample
+
 Segmentation
 ------------
 
