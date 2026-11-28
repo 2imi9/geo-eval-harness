@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_RESULTS_DIR = "results/models"
 
-#: Few-shot episode columns of the resume key. A file without them keys them as empty, like the
-#: setup columns, so a file need not have them to be deduplicated.
+#: Episode columns of the resume key (few-shot and resampled probes). A file without them keys
+#: them as empty, like the setup columns, so a file need not have them to be deduplicated.
 EPISODE_COLS = ("shots", "episode_seed")
 
 # The resume key minus ``config_hash`` (an unhashed row and a hashed rerun of
@@ -434,7 +434,7 @@ class EvaluationResult:
     mce_ts: float | None = None
     temperature: float | None = None
     calibration_n_bins: int | None = None
-    # Few-shot episode (empty for probes trained on the whole training split).
+    # Few-shot episode or resample seed (empty for probes trained on the whole training split).
     shots: int | None = None
     episode_seed: int | None = None
 

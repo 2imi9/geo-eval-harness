@@ -77,6 +77,9 @@ Method values
                               when ``classification.feature_standardize`` is enabled. -> ``results/models/``
 ``linear-fewshot``            The linear probe trained on one few-shot episode (see ``classification.few_shot``);
                               ``-std`` is appended as for ``linear``. -> ``results/models/``
+``linear-resample``           The linear probe refit on a stratified bootstrap resample of the training split, one row per seed,
+                              plus ``<metric>_mean`` and ``<metric>_std`` summary rows (see
+                              ``classification.resample``); ``-std`` is appended as for ``linear``. -> ``results/models/``
 ``intrinsic_dim``             Intrinsic-dimension estimates and centered feature-spectrum diagnostics on extracted embeddings.
                               Enable both with ``intrinsic_dim.enabled: true`` or set ``estimators: []`` for
                               spectrum-only output. -> ``results/intrinsic_dim/``
@@ -100,6 +103,7 @@ Column                 Description
 ``dataset``            Dataset CLI name (e.g. ``m-eurosat``).
 ``method``             Probe or measurement name; see `Method values`_.
 ``metric_name``        Primary metric (``accuracy``, ``micro_mAP``, ``mIoU``,
+                       ``<metric>_mean`` or ``<metric>_std`` for ``linear-resample`` summaries,
                        ``id_<estimator>_<split>`` for intrinsic-dimension rows,
                        or ``spectrum_<metric>_<split>`` for feature-spectrum rows).
 ``metric_value``       Point estimate.
@@ -147,7 +151,8 @@ Column                 Description
 ``temperature``        Fitted temperature-scaling scalar (linear probe with ``temp_scale``).
 ``calibration_n_bins`` Number of histogram bins used for calibration metrics.
 ``shots``              Examples per class in a ``linear-fewshot`` episode; empty otherwise.
-``episode_seed``       Seed that drew a ``linear-fewshot`` episode; empty otherwise.
+``episode_seed``       Seed that drew a ``linear-fewshot`` episode or a ``linear-resample`` training set;
+                       empty otherwise.
 ====================== ============================================================
 
 Segmentation rows also include ``boundary_iou`` (mean Boundary IoU) and ``boundary_iou_width`` (the boundary tolerance in pixels, rounded from 2% of the image diagonal), plus ``best_val_epoch`` and ``best_val_miou``: the epoch restored for test evaluation and its validation mIoU (see :ref:`segmentation-model-selection`).

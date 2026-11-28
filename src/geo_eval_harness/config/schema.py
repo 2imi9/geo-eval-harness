@@ -116,7 +116,7 @@ def _check_output_path(value: str) -> str:
     return value
 
 
-type Method = Literal["knn", "linear", "few_shot"]
+type Method = Literal["knn", "linear", "few_shot", "resample"]
 type Device = Annotated[StrictStr, AfterValidator(_check_device)]
 type KnnDevice = Annotated[Device, AfterValidator(_check_knn_device)]
 type Methods = Annotated[list[Method], AfterValidator(_check_methods)]
@@ -237,6 +237,22 @@ class FewShotConfig(StrictModel):
         return value
 
 
+class ResampleConfig(StrictModel):
+    """Seeds of the linear probes refit on bootstrap resamples of the training split."""
+
+    seeds: list[Annotated[StrictInt, Field(ge=0)]] = Field(
+        default_factory=lambda: [0, 1, 2, 3, 4], min_length=2
+    )
+
+    @field_validator("seeds")
+    @classmethod
+    def validate_seeds(cls, value: list[int]) -> list[int]:
+        """Reject repeated seeds."""
+        if len(set(value)) != len(value):
+            raise ValueError("resample.seeds must not contain duplicates")
+        return value
+
+
 class CalibrationConfig(StrictModel):
     """Classification calibration metrics."""
 
@@ -254,6 +270,7 @@ class ClassificationConfig(StrictModel):
     linear: LinearConfig = Field(default_factory=LinearConfig)
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
     few_shot: FewShotConfig = Field(default_factory=FewShotConfig)
+    resample: ResampleConfig = Field(default_factory=ResampleConfig)
     bootstrap_samples: StrictInt = Field(default=200, gt=0)
     feature_standardize: StrictBool = False
 
@@ -271,6 +288,11 @@ class ClassificationConfig(StrictModel):
     def few_shot_method(self) -> str:
         """Return ``linear-fewshot``, with ``-std`` when features are standardized."""
         return f"linear-fewshot{self._method_suffix}"
+
+    @property
+    def resample_method(self) -> str:
+        """Return ``linear-resample``, with ``-std`` when features are standardized."""
+        return f"linear-resample{self._method_suffix}"
 
     @property
     def _method_suffix(self) -> str:

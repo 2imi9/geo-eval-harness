@@ -46,7 +46,10 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--partition", default=argparse.SUPPRESS)
     parser.add_argument("--time-steps", type=int, default=argparse.SUPPRESS)
     parser.add_argument(
-        "--methods", nargs="+", choices=("knn", "linear", "few_shot"), default=argparse.SUPPRESS
+        "--methods",
+        nargs="+",
+        choices=("knn", "linear", "few_shot", "resample"),
+        default=argparse.SUPPRESS,
     )
     parser.add_argument("--knn-k", type=int, default=argparse.SUPPRESS)
     parser.add_argument("--knn-device", default=argparse.SUPPRESS)

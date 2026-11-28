@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
 import pandas as pd
 import pytest
 import torch
@@ -449,3 +450,38 @@ def test_few_shot_episodes_resume_one_at_a_time_and_keep_the_hash(
 
     fit.assert_called_once()
     assert pd.read_csv(out)["episode_seed"].tolist() == [0, 1]
+
+
+def test_resample_seeds_draw_training_sets_and_rerun_when_seeds_change(
+    tmp_path: Path, runner: RunnerMocks
+) -> None:
+    out = tmp_path / "out.csv"
+    resample = {"methods": ["resample"], "resample": {"seeds": [0, 1]}}
+    cfg = _compose_cfg(out, overrides={"classification": resample, "output": {"resume": True}})
+
+    with mock.patch("geo_eval_harness.main.evaluate_logistic", wraps=evaluate_logistic) as fit:
+        main(cfg)
+        main(cfg)
+
+    assert fit.call_count == 2
+    first, second = (call.args[0].train.features for call in fit.call_args_list)
+    assert not np.array_equal(first, second)
+    rows = pd.read_csv(out)
+    assert rows["metric_name"].tolist() == ["accuracy", "accuracy", "accuracy_mean", "accuracy_std"]
+    assert rows["episode_seed"].tolist()[:2] == [0, 1]
+    per_seed = rows["metric_value"].iloc[:2].to_numpy()
+    assert rows["metric_value"].iloc[2:].tolist() == pytest.approx(
+        [per_seed.mean(), per_seed.std(ddof=1)]
+    )
+    assert _hash_for(cfg) not in set(rows["config_hash"])
+
+    reseeded = _compose_cfg(
+        out,
+        overrides={
+            "classification": resample | {"resample": {"seeds": [0, 2]}},
+            "output": {"resume": True},
+        },
+    )
+    main(reseeded)
+    reseeded_rows = pd.read_csv(out).iloc[4:]
+    assert reseeded_rows["metric_value"].iloc[0] == pytest.approx(rows["metric_value"].iloc[0])
