@@ -116,7 +116,7 @@ def _check_output_path(value: str) -> str:
     return value
 
 
-type Method = Literal["knn", "linear"]
+type Method = Literal["knn", "linear", "few_shot"]
 type Device = Annotated[StrictStr, AfterValidator(_check_device)]
 type KnnDevice = Annotated[Device, AfterValidator(_check_knn_device)]
 type Methods = Annotated[list[Method], AfterValidator(_check_methods)]
@@ -220,6 +220,23 @@ class LinearConfig(StrictModel):
         return self
 
 
+class FewShotConfig(StrictModel):
+    """Few-shot linear probe episodes drawn from the training split."""
+
+    shots: list[Annotated[StrictInt, Field(gt=0)]] = Field(
+        default_factory=lambda: [1, 5, 10, 20], min_length=1
+    )
+    episodes: StrictInt = Field(default=5, gt=0)
+
+    @field_validator("shots")
+    @classmethod
+    def validate_shots(cls, value: list[int]) -> list[int]:
+        """Reject repeated shot counts."""
+        if len(set(value)) != len(value):
+            raise ValueError("few_shot.shots must not contain duplicates")
+        return value
+
+
 class CalibrationConfig(StrictModel):
     """Classification calibration metrics."""
 
@@ -236,6 +253,7 @@ class ClassificationConfig(StrictModel):
     knn_device: KnnDevice | None = None
     linear: LinearConfig = Field(default_factory=LinearConfig)
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
+    few_shot: FewShotConfig = Field(default_factory=FewShotConfig)
     bootstrap_samples: StrictInt = Field(default=200, gt=0)
     feature_standardize: StrictBool = False
 
@@ -248,6 +266,11 @@ class ClassificationConfig(StrictModel):
     def linear_method(self) -> str:
         """Return ``linear``, with ``-std`` when features are standardized."""
         return f"linear{self._method_suffix}"
+
+    @property
+    def few_shot_method(self) -> str:
+        """Return ``linear-fewshot``, with ``-std`` when features are standardized."""
+        return f"linear-fewshot{self._method_suffix}"
 
     @property
     def _method_suffix(self) -> str:

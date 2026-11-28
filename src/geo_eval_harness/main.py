@@ -33,6 +33,7 @@ from geo_eval_harness.datasets import (
     list_datasets,
 )
 from geo_eval_harness.devices import resolve_device
+from geo_eval_harness.few_shot import few_shot_indices
 from geo_eval_harness.intrinsic_dim import (
     FEATURE_SPECTRUM_METRICS,
     DegenerateManifoldError,
@@ -322,22 +323,28 @@ def evaluate_logistic(
     splits: FeatureSplits[np.ndarray],
     c_values: Sequence[float],
     cfg: RunConfig,
+    *,
+    refit_train_val: bool | None = None,
 ) -> tuple[float, float, float, float, dict[str, float], dict[str, float | None]]:
     """Select C on validation data, refit, and score the test split.
 
-    The label shape selects single-label or multilabel scoring.
+    The label shape selects single-label or multilabel scoring. ``refit_train_val`` overrides
+    ``classification.linear.refit_train_val``, which decides whether the final fit also uses the
+    validation split.
 
     Returns:
         Primary metric and bootstrap bounds, selected ``C``, and raw and scaled calibration.
         Scaled calibration includes the fitted temperature.
-        Its values are ``None`` when scaling is disabled or ``merge_val`` is true.
+        Its values are ``None`` when scaling is disabled or the final fit uses the validation split.
     """
     x_train, y_train = splits.train.features, splits.train.labels
     x_val, y_val = splits.val.features, splits.val.labels
     x_test, y_test = splits.test.features, splits.test.labels
     seed, device, verbose = cfg.runtime.seed, cfg.runtime.device, cfg.runtime.verbose
     n_bootstrap = cfg.classification.bootstrap_samples
-    merge_val = cfg.classification.linear.refit_train_val
+    merge_val = (
+        cfg.classification.linear.refit_train_val if refit_train_val is None else refit_train_val
+    )
     calibration_cfg = cfg.classification.calibration
     calibration_n_bins = calibration_cfg.n_bins_linear
     temp_scale = calibration_cfg.temp_scale
@@ -817,6 +824,73 @@ def _epoch_metrics_writer(
     return EpochMetricsWriter(Path(cfg.output.epoch_metrics), identity)
 
 
+def evaluate_few_shot(  # noqa: PLR0913 - keep the CLI failure policy explicit
+    splits: FeatureSplits[np.ndarray],
+    c_values: Sequence[float],
+    cfg: RunConfig,
+    plan: DatasetRunPlan,
+    common_meta: ResultMetadata,
+    *,
+    strict: bool = False,
+) -> Iterator[dict]:
+    """Yield one linear-probe row per planned few-shot episode.
+
+    Each episode trains on ``shots`` examples of every class drawn from the training split, selects
+    C on the validation split, and scores the test split, without refitting on validation data.
+    An episode whose shot count exceeds the size of a class is skipped with a warning.
+    """
+    labels = splits.train.labels
+    for shots, episode_seed in sorted(plan.few_shot_episodes):
+        try:
+            indices = few_shot_indices(labels, shots, episode_seed)
+        except ValueError as exc:  # allow-except: A shot count can exceed a small class.
+            logger.warning(
+                "[few-shot] dataset=%s: skipping episode %s: %s",
+                common_meta.get("dataset"),
+                episode_seed,
+                exc,
+            )
+            continue
+        episode = replace(
+            splits, train=FeatureSplit(splits.train.features[indices], labels[indices])
+        )
+        try:
+            score, lo, hi, best_c, cal, cal_ts = evaluate_logistic(
+                episode, c_values, cfg, refit_train_val=False
+            )
+        except LinearProbeDivergedError as exc:  # allow-except: Other episodes remain usable.
+            if strict:
+                raise
+            logger.warning(
+                "[few-shot] dataset=%s: skipping %s-shot episode %s, no usable C found. Diagnostic: %s",
+                common_meta.get("dataset"),
+                shots,
+                episode_seed,
+                exc,
+            )
+            continue
+        episode_meta: ResultMetadata = {**common_meta, "n_train": len(indices)}
+        yield EvaluationResult(
+            **episode_meta,
+            method=cfg.classification.few_shot_method,
+            metric_name=plan.metric_name,
+            metric_value=score,
+            ci_lower=lo,
+            ci_upper=hi,
+            best_c=best_c,
+            shots=shots,
+            episode_seed=episode_seed,
+            ece=cal["ece"],
+            rms_ce=cal["rms_ce"],
+            mce=cal["mce"],
+            ece_ts=cal_ts["ece_ts"],
+            rms_ce_ts=cal_ts["rms_ce_ts"],
+            mce_ts=cal_ts["mce_ts"],
+            temperature=cal_ts["temperature"],
+            calibration_n_bins=cfg.classification.calibration.n_bins_linear,
+        ).to_row()
+
+
 def run_classification(  # noqa: PLR0913 - keep the CLI failure policy explicit
     cfg: RunConfig,
     plan: DatasetRunPlan,
@@ -909,6 +983,9 @@ def run_classification(  # noqa: PLR0913 - keep the CLI failure policy explicit
                 calibration_n_bins=cal_n_bins_linear,
             ).to_row()
             yield [row], [], []
+    few_shot_meta: ResultMetadata = {**common_meta, "merge_val": False}
+    for row in evaluate_few_shot(splits, c_values_list, cfg, plan, few_shot_meta, strict=strict):
+        yield [row], [], []
     if not plan.skip_id:
         id_rows = evaluate_intrinsic_dim(
             {"train": x_train, "val": x_val, "test": x_test},

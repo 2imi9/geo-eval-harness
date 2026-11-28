@@ -29,6 +29,9 @@ KEY_COLS = (
     # Dataset overrides can change resolution or pooling under one model name (Scale-MAE).
     "res",
     "pool",
+    # A few-shot probe row is one episode: its shot count and the seed that drew its training set.
+    "shots",
+    "episode_seed",
     # Include result-affecting settings not represented by the other columns.
     "config_hash",
 )
@@ -51,7 +54,9 @@ _UNHASHED_ADAPTATION_FIELDS = {
 def resume_config_hash(config: RunConfig, model_cfg: ModelPreset, *, task: str) -> str:
     """Fingerprint result-affecting settings for one resolved image run.
 
-    Excludes the model and KNN devices and worker count, which only control execution. Includes
+    Excludes the model and KNN devices and worker count, which only control execution, and the
+    probe selection (``methods``, ``few_shot``), whose rows carry their own method, shot count, and
+    episode seed. Includes
     batch size because it can change floating-point results. LoRA settings count only when
     ``lora_rank`` enables LoRA, so preset LoRA targets do not change frozen-probe hashes.
     ``neck``, ``upsampler``,
@@ -65,7 +70,7 @@ def resume_config_hash(config: RunConfig, model_cfg: ModelPreset, *, task: str) 
     settings such as a preset's ``segmentation.layers`` never change the hash of classification,
     profile, or intrinsic-dimension rows. Segmentation hashes also cover ``classification``.
     """
-    classification_exclude = {"methods"}
+    classification_exclude = {"methods", "few_shot"}
     if not config.classification.feature_standardize:
         classification_exclude.add("feature_standardize")
     runtime_fields = {"seed", "batch_size"}
@@ -243,6 +248,7 @@ class DatasetRunPlan:
     skip_id: bool
     skip_profile: bool
     id_missing_metrics: frozenset[str] = frozenset()
+    few_shot_episodes: frozenset[tuple[int, int]] = frozenset()
     knn_device: str | None = None
 
 
@@ -254,7 +260,7 @@ def plan_dataset_run(
 ) -> DatasetRunPlan:
     """Plan which work remains for a dataset before loading data or a model."""
     ds_name = common_meta["dataset"]
-    model_key = (*(_canonical_key_cell(common_meta[key]) for key in KEY_COLS[2:]),)
+    model_key = (*(_canonical_key_cell(common_meta.get(key)) for key in KEY_COLS[2:]),)
     completed_runs, completed_metrics = completed.completed_runs, completed.completed_metrics
 
     if ds_cls.task == "segmentation":
@@ -280,6 +286,7 @@ def plan_dataset_run(
         (cfg.output.resume and linear_key in completed_runs)
         or "linear" not in cfg.classification.methods
     )
+    few_shot_episodes = _missing_few_shot_episodes(cfg, ds_cls, common_meta, completed_runs)
 
     id_cfg = cfg.intrinsic_dim
     id_enabled = id_cfg.enabled
@@ -311,10 +318,46 @@ def plan_dataset_run(
 
     return DatasetRunPlan(
         metric_name="micro_mAP" if ds_cls.multilabel else "accuracy",
-        skip_dataset=skip_knn and skip_linear and skip_id and skip_profile,
+        skip_dataset=(
+            skip_knn and skip_linear and not few_shot_episodes and skip_id and skip_profile
+        ),
         skip_knn=skip_knn,
         skip_linear=skip_linear,
         skip_id=skip_id,
         skip_profile=skip_profile,
         id_missing_metrics=id_missing_metrics,
+        few_shot_episodes=few_shot_episodes,
+    )
+
+
+def _missing_few_shot_episodes(
+    cfg: RunConfig,
+    ds_cls: type,
+    common_meta: Mapping[str, object],
+    completed_runs: set[tuple[str, ...]],
+) -> frozenset[tuple[int, int]]:
+    """Return the requested ``(shots, episode_seed)`` pairs that have no result row yet."""
+    classification = cfg.classification
+    if "few_shot" not in classification.methods:
+        return frozenset()
+    if ds_cls.multilabel:
+        logger.warning(
+            "[%s] Skipping few-shot probes: they support single-label datasets only.",
+            common_meta["dataset"],
+        )
+        return frozenset()
+    meta = {**common_meta, "method": classification.few_shot_method}
+    requested = (
+        (shots, episode)
+        for shots in classification.few_shot.shots
+        for episode in range(classification.few_shot.episodes)
+    )
+    return frozenset(
+        (shots, episode)
+        for shots, episode in requested
+        if not (
+            cfg.output.resume
+            and _row_key(meta | {"shots": shots, "episode_seed": episode}, KEY_COLS)
+            in completed_runs
+        )
     )

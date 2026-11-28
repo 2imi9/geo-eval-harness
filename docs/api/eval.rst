@@ -46,6 +46,15 @@ Linear probing
 .. currentmodule:: geo_eval_harness.linear
 .. autoclass:: LogisticRegression
 
+Few-shot linear probing
+-----------------------
+
+.. currentmodule:: geo_eval_harness.main
+.. autofunction:: evaluate_few_shot
+
+.. currentmodule:: geo_eval_harness.few_shot
+.. autofunction:: few_shot_indices
+
 Segmentation
 ------------
 

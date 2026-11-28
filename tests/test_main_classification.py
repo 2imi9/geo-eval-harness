@@ -11,7 +11,7 @@ from torchgeo.datasets import DatasetNotFoundError
 
 from geo_eval_harness.config.presets import resolve_run_config
 from geo_eval_harness.config.run import validate_run_config
-from geo_eval_harness.main import LinearProbeDivergedError, main
+from geo_eval_harness.main import LinearProbeDivergedError, evaluate_logistic, main
 from tests.support.runner import (
     RunnerMocks,
     _chainable_model_mock,
@@ -422,3 +422,30 @@ class TestResume:
         assert train.features.std(axis=0) == pytest.approx(1, abs=1e-4)
         assert test.features == pytest.approx((raw_test[0] - mean) / std, abs=1e-4)
         assert list(pd.read_csv(out)["method"]) == ["knn5", "knn5-std"]
+
+
+def test_few_shot_episodes_resume_one_at_a_time_and_keep_the_hash(
+    tmp_path: Path, runner: RunnerMocks
+) -> None:
+    out = tmp_path / "out.csv"
+    few_shot = {"methods": ["few_shot"], "few_shot": {"shots": [1, 2], "episodes": 2}}
+    cfg = _compose_cfg(out, overrides={"classification": few_shot})
+
+    main(cfg)
+
+    rows = pd.read_csv(out)
+    columns = ["method", "shots", "episode_seed", "n_train", "merge_val"]
+    # Classes 6-9 have one training example each, so no 2-shot episode can be drawn.
+    assert rows[columns].to_numpy().tolist() == [
+        ["linear-fewshot", 1, 0, 10, False],
+        ["linear-fewshot", 1, 1, 10, False],
+    ]
+    assert set(rows["config_hash"]) == {_hash_for(_compose_cfg(out))}
+
+    rows.iloc[[0]].to_csv(out, index=False)
+    resumed = _compose_cfg(out, overrides={"classification": few_shot, "output": {"resume": True}})
+    with mock.patch("geo_eval_harness.main.evaluate_logistic", wraps=evaluate_logistic) as fit:
+        main(resumed)
+
+    fit.assert_called_once()
+    assert pd.read_csv(out)["episode_seed"].tolist() == [0, 1]
